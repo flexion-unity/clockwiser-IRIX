@@ -1,0 +1,128 @@
+if(NOT APPLE)
+    return()
+endif()
+
+set(clockwiserNotaryAppleId "@CLOCKWISER_MAC_NOTARY_APPLE_ID@")
+set(clockwiserNotaryTeamId "@CLOCKWISER_MAC_NOTARY_TEAM_ID@")
+set(clockwiserNotaryPassword "@CLOCKWISER_MAC_NOTARY_PASSWORD@")
+
+if(clockwiserNotaryAppleId STREQUAL "" OR clockwiserNotaryTeamId STREQUAL "" OR clockwiserNotaryPassword STREQUAL "")
+    message(FATAL_ERROR "CLOCKWISER macOS notarization is enabled but notary credentials are missing")
+endif()
+
+set(clockwiserZipPackages "")
+if(DEFINED CPACK_PACKAGE_FILES)
+    foreach(onePkg IN LISTS CPACK_PACKAGE_FILES)
+        if(onePkg MATCHES "\\.zip$")
+            list(APPEND clockwiserZipPackages "${onePkg}")
+        endif()
+    endforeach()
+endif()
+if(NOT clockwiserZipPackages)
+    file(GLOB clockwiserZipPackages
+        "${CPACK_PACKAGE_DIRECTORY}/${CPACK_PACKAGE_FILE_NAME}*.zip"
+    )
+endif()
+
+if(NOT clockwiserZipPackages)
+    message(FATAL_ERROR "No ZIP package found to notarize")
+endif()
+
+foreach(oneZip IN LISTS clockwiserZipPackages)
+    message(STATUS "Submitting ZIP for notarization: ${oneZip}")
+    execute_process(
+        COMMAND xcrun notarytool submit "${oneZip}"
+            --apple-id "${clockwiserNotaryAppleId}"
+            --password "${clockwiserNotaryPassword}"
+            --team-id "${clockwiserNotaryTeamId}"
+            --wait
+        RESULT_VARIABLE clockwiserNotaryResult
+        OUTPUT_VARIABLE clockwiserNotaryOutput
+        ERROR_VARIABLE clockwiserNotaryError
+    )
+    if(NOT clockwiserNotaryResult EQUAL 0)
+        message(FATAL_ERROR "Notarization failed for ${oneZip}\n${clockwiserNotaryOutput}\n${clockwiserNotaryError}")
+    endif()
+    message(STATUS "Notarization OK for ${oneZip}")
+
+    set(clockwiserStapleRoot "${CPACK_TOPLEVEL_DIRECTORY}/notary_staple")
+    file(REMOVE_RECURSE "${clockwiserStapleRoot}")
+    file(MAKE_DIRECTORY "${clockwiserStapleRoot}")
+
+    execute_process(
+        COMMAND ditto -x -k "${oneZip}" "${clockwiserStapleRoot}"
+        RESULT_VARIABLE clockwiserUnzipResult
+        ERROR_VARIABLE clockwiserUnzipError
+    )
+    if(NOT clockwiserUnzipResult EQUAL 0)
+        message(FATAL_ERROR "Failed to unzip notarized package for stapling: ${oneZip}\n${clockwiserUnzipError}")
+    endif()
+
+    file(GLOB clockwiserPackageRoots LIST_DIRECTORIES true "${clockwiserStapleRoot}/*")
+    set(clockwiserStapleApps "")
+    foreach(oneRoot IN LISTS clockwiserPackageRoots)
+        if(IS_DIRECTORY "${oneRoot}")
+            file(GLOB oneRootApps LIST_DIRECTORIES true "${oneRoot}/*.app")
+            list(APPEND clockwiserStapleApps ${oneRootApps})
+        endif()
+    endforeach()
+    list(LENGTH clockwiserStapleApps clockwiserStapleAppCount)
+    if(NOT clockwiserStapleAppCount EQUAL 1)
+        message(FATAL_ERROR "Expected exactly one .app in notarized ZIP, found ${clockwiserStapleAppCount}")
+    endif()
+    list(GET clockwiserStapleApps 0 clockwiserStapleAppPath)
+
+    # notarytool --wait can return Accepted slightly before CloudKit serves the staple ticket.
+    # stapler then fails with Error 65 ("Record not found") until propagation catches up, retry.
+    message(STATUS "Brief wait before stapling (notary ticket propagation)...")
+    execute_process(COMMAND "${CMAKE_COMMAND}" -E sleep 8)
+
+    set(_clockwiserStapleAttempt 0)
+    set(_clockwiserStapleMaxAttempts 36)
+    set(clockwiserStapleResult 1)
+    set(clockwiserStapleOutput "")
+    set(clockwiserStapleError "")
+    while(_clockwiserStapleAttempt LESS _clockwiserStapleMaxAttempts)
+        execute_process(
+            COMMAND xcrun stapler staple "${clockwiserStapleAppPath}"
+            RESULT_VARIABLE clockwiserStapleResult
+            OUTPUT_VARIABLE clockwiserStapleOutput
+            ERROR_VARIABLE clockwiserStapleError
+        )
+        if(clockwiserStapleResult EQUAL 0)
+            set(_clockwiserStapleAttempt ${_clockwiserStapleMaxAttempts})
+        else()
+            math(EXPR _clockwiserStapleAttempt "${_clockwiserStapleAttempt}+1")
+            if(_clockwiserStapleAttempt LESS _clockwiserStapleMaxAttempts)
+                message(STATUS "Stapler not ready yet (${_clockwiserStapleAttempt}/${_clockwiserStapleMaxAttempts}); sleeping 10s (Error 65 / Record not found is common right after notarytool)...")
+                execute_process(COMMAND "${CMAKE_COMMAND}" -E sleep 10)
+            endif()
+        endif()
+    endwhile()
+    if(NOT clockwiserStapleResult EQUAL 0)
+        message(FATAL_ERROR "Stapling failed for ${clockwiserStapleAppPath} after ${_clockwiserStapleMaxAttempts} attempts\n${clockwiserStapleOutput}\n${clockwiserStapleError}")
+    endif()
+    message(STATUS "Stapling OK for ${clockwiserStapleAppPath}")
+
+    execute_process(
+        COMMAND ditto -c -k --sequesterRsrc --keepParent "${clockwiserStapleAppPath}" "${oneZip}"
+        WORKING_DIRECTORY "${clockwiserStapleRoot}"
+        RESULT_VARIABLE clockwiserRezipResult
+        ERROR_VARIABLE clockwiserRezipError
+    )
+    if(NOT clockwiserRezipResult EQUAL 0)
+        message(FATAL_ERROR "Failed to rezip stapled app for ${oneZip}\n${clockwiserRezipError}")
+    endif()
+
+    if(DEFINED CPACK_PACKAGE_DIRECTORY AND DEFINED CPACK_PACKAGE_FILE_NAME)
+        set(clockwiserFinalZip "${CPACK_PACKAGE_DIRECTORY}/${CPACK_PACKAGE_FILE_NAME}.zip")
+        execute_process(
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${oneZip}" "${clockwiserFinalZip}"
+            RESULT_VARIABLE clockwiserCopyZipResult
+            ERROR_VARIABLE clockwiserCopyZipError
+        )
+        if(NOT clockwiserCopyZipResult EQUAL 0)
+            message(FATAL_ERROR "Failed to copy finalized notarized ZIP to ${clockwiserFinalZip}\n${clockwiserCopyZipError}")
+        endif()
+    endif()
+endforeach()

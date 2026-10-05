@@ -1,0 +1,179 @@
+set(clockwiserExecutablePath "${CMAKE_INSTALL_PREFIX}/clockwiser")
+set(clockwiserAppBundlePath "")
+set(clockwiserLibraryInstallDir "${CMAKE_INSTALL_PREFIX}")
+set(clockwiserCodesignIdentity "@CLOCKWISER_MAC_CODESIGN_IDENTITY@")
+
+if(APPLE)
+    file(GLOB clockwiserInstalledApps "${CMAKE_INSTALL_PREFIX}/*.app")
+    list(LENGTH clockwiserInstalledApps clockwiserInstalledAppCount)
+    if(clockwiserInstalledAppCount GREATER 0)
+        list(GET clockwiserInstalledApps 0 clockwiserAppBundlePath)
+        set(clockwiserExecutablePath "${clockwiserAppBundlePath}/Contents/MacOS/clockwiser")
+        set(clockwiserLibraryInstallDir "${clockwiserAppBundlePath}/Contents/Frameworks")
+    endif()
+endif()
+
+if(NOT EXISTS "${clockwiserExecutablePath}")
+    message(WARNING "Runtime dependency collection skipped: executable not found at ${clockwiserExecutablePath}")
+    return()
+endif()
+
+set(clockwiserRuntimeSearchDirs
+@CLOCKWISER_RUNTIME_DEP_SEARCH_DIRS_LINES@
+)
+
+set(clockwiserPreExcludeRegexes
+    "api-ms-win-"
+    "ext-ms-win-"
+    "^/System/Library/"
+    "^/usr/lib/"
+    "^/lib/"
+)
+
+set(clockwiserPostExcludeRegexes
+    ".*/ld-linux.*"
+    ".*/linux-vdso.*"
+)
+
+file(GET_RUNTIME_DEPENDENCIES
+    EXECUTABLES "${clockwiserExecutablePath}"
+    RESOLVED_DEPENDENCIES_VAR clockwiserResolvedDeps
+    UNRESOLVED_DEPENDENCIES_VAR clockwiserUnresolvedDeps
+    DIRECTORIES ${clockwiserRuntimeSearchDirs}
+    PRE_EXCLUDE_REGEXES ${clockwiserPreExcludeRegexes}
+    POST_EXCLUDE_REGEXES ${clockwiserPostExcludeRegexes}
+)
+
+foreach(oneDep IN LISTS clockwiserResolvedDeps)
+    if(EXISTS "${oneDep}")
+        file(INSTALL
+            DESTINATION "${clockwiserLibraryInstallDir}"
+            TYPE SHARED_LIBRARY
+            FOLLOW_SYMLINK_CHAIN
+            FILES "${oneDep}"
+        )
+    endif()
+endforeach()
+
+if(APPLE)
+    function(clockwiserPatchLoadPaths oneBinaryPath)
+        if(NOT EXISTS "${oneBinaryPath}")
+            return()
+        endif()
+
+        execute_process(
+            COMMAND otool -L "${oneBinaryPath}"
+            OUTPUT_VARIABLE clockwiserOtoolOutput
+            ERROR_QUIET
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+        string(REPLACE "\n" ";" clockwiserOtoolLines "${clockwiserOtoolOutput}")
+
+        foreach(oneLine IN LISTS clockwiserOtoolLines)
+            string(STRIP "${oneLine}" oneLineStripped)
+            if(oneLineStripped STREQUAL "")
+                continue()
+            endif()
+            if(oneLineStripped MATCHES "^/usr/lib/" OR oneLineStripped MATCHES "^/System/Library/")
+                continue()
+            endif()
+
+            string(REGEX REPLACE " \\(compatibility version.*$" "" oneDepPath "${oneLineStripped}")
+            if(oneDepPath STREQUAL "${oneBinaryPath}")
+                continue()
+            endif()
+
+            get_filename_component(oneDepName "${oneDepPath}" NAME)
+            set(oneBundledDepPath "${clockwiserLibraryInstallDir}/${oneDepName}")
+            if(EXISTS "${oneBundledDepPath}")
+                set(oneDepInstallRef "@executable_path/${oneDepName}")
+                if(NOT clockwiserAppBundlePath STREQUAL "")
+                    set(oneDepInstallRef "@executable_path/../Frameworks/${oneDepName}")
+                endif()
+                execute_process(
+                    COMMAND install_name_tool -change "${oneDepPath}" "${oneDepInstallRef}" "${oneBinaryPath}"
+                    RESULT_VARIABLE clockwiserInstallNameResult
+                    ERROR_QUIET
+                )
+                if(NOT clockwiserInstallNameResult EQUAL 0)
+                    message(WARNING "Failed to patch dependency path '${oneDepPath}' in ${oneBinaryPath}")
+                endif()
+            endif()
+        endforeach()
+    endfunction()
+
+    file(GLOB clockwiserBundledDylibs "${clockwiserLibraryInstallDir}/*.dylib")
+    foreach(oneDylib IN LISTS clockwiserBundledDylibs)
+        get_filename_component(oneDylibName "${oneDylib}" NAME)
+        execute_process(
+            COMMAND install_name_tool -id "@executable_path/${oneDylibName}" "${oneDylib}"
+            RESULT_VARIABLE clockwiserSetIdResult
+            ERROR_QUIET
+        )
+        if(NOT clockwiserSetIdResult EQUAL 0)
+            message(WARNING "Failed to set install name for ${oneDylib}")
+        endif()
+        clockwiserPatchLoadPaths("${oneDylib}")
+    endforeach()
+
+    clockwiserPatchLoadPaths("${clockwiserExecutablePath}")
+
+    foreach(oneDylib IN LISTS clockwiserBundledDylibs)
+        if(NOT clockwiserCodesignIdentity STREQUAL "")
+            execute_process(
+                COMMAND codesign --force --options runtime --timestamp --sign "${clockwiserCodesignIdentity}" "${oneDylib}"
+                RESULT_VARIABLE clockwiserCodesignDepResult
+                ERROR_QUIET
+            )
+        else()
+            execute_process(
+                COMMAND codesign --force --sign - "${oneDylib}"
+                RESULT_VARIABLE clockwiserCodesignDepResult
+                ERROR_QUIET
+            )
+        endif()
+        if(NOT clockwiserCodesignDepResult EQUAL 0)
+            message(WARNING "Failed to codesign ${oneDylib}")
+        endif()
+    endforeach()
+
+    if(NOT clockwiserAppBundlePath STREQUAL "")
+        if(NOT clockwiserCodesignIdentity STREQUAL "")
+            execute_process(
+                COMMAND codesign --force --deep --options runtime --timestamp --sign "${clockwiserCodesignIdentity}" "${clockwiserAppBundlePath}"
+                RESULT_VARIABLE clockwiserCodesignAppResult
+                ERROR_QUIET
+            )
+        else()
+            execute_process(
+                COMMAND codesign --force --sign - "${clockwiserAppBundlePath}"
+                RESULT_VARIABLE clockwiserCodesignAppResult
+                ERROR_QUIET
+            )
+        endif()
+        if(NOT clockwiserCodesignAppResult EQUAL 0)
+            message(WARNING "Failed to codesign ${clockwiserAppBundlePath}")
+        endif()
+    else()
+        if(NOT clockwiserCodesignIdentity STREQUAL "")
+            execute_process(
+                COMMAND codesign --force --options runtime --timestamp --sign "${clockwiserCodesignIdentity}" "${clockwiserExecutablePath}"
+                RESULT_VARIABLE clockwiserCodesignExeResult
+                ERROR_QUIET
+            )
+        else()
+            execute_process(
+                COMMAND codesign --force --sign - "${clockwiserExecutablePath}"
+                RESULT_VARIABLE clockwiserCodesignExeResult
+                ERROR_QUIET
+            )
+        endif()
+        if(NOT clockwiserCodesignExeResult EQUAL 0)
+            message(WARNING "Failed to codesign ${clockwiserExecutablePath}")
+        endif()
+    endif()
+endif()
+
+if(clockwiserUnresolvedDeps)
+    message(WARNING "Some runtime dependencies could not be resolved: ${clockwiserUnresolvedDeps}")
+endif()
