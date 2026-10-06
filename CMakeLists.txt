@@ -91,7 +91,22 @@ if(EMSCRIPTEN)
     return()
 endif()
 
-find_package(SDL2 REQUIRED CONFIG)
+# -----------------------------------------------------------------------------
+# IRIX: link the bundled static SDL2 from IRIX-SDL2/ instead of a system one.
+# X11/GL are dlopen'd at runtime; libaudio (dmedia) and pthreads are linked.
+# -----------------------------------------------------------------------------
+if(CMAKE_SYSTEM_NAME MATCHES "^IRIX")
+    set(CLOCKWISER_IRIX_SDL2_DIR "${CMAKE_SOURCE_DIR}/IRIX-SDL2")
+    find_package(Threads REQUIRED)
+    add_library(SDL2::SDL2 STATIC IMPORTED)
+    set_target_properties(SDL2::SDL2 PROPERTIES
+        IMPORTED_LOCATION "${CLOCKWISER_IRIX_SDL2_DIR}/lib32/libSDL2.a"
+        INTERFACE_INCLUDE_DIRECTORIES "${CLOCKWISER_IRIX_SDL2_DIR}/include;${CLOCKWISER_IRIX_SDL2_DIR}/include/SDL2"
+        INTERFACE_LINK_LIBRARIES "audio;Threads::Threads;m"
+    )
+else()
+    find_package(SDL2 REQUIRED CONFIG)
+endif()
 
 find_package(PkgConfig QUIET)
 if(PKG_CONFIG_FOUND)
