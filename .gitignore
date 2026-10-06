@@ -21,7 +21,6 @@ core
 
 # Libraries
 *.lib
-*.a
 *.la
 *.lo
 
