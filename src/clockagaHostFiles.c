@@ -143,7 +143,7 @@ static int nameIsPackFile(char *name) {
         return 0;
     }
 #else
-    if (strncasecmp(name + len - extLen, ".pack", extLen) != 0) {
+    if (SDL_strncasecmp(name + len - extLen, ".pack", extLen) != 0) {        
         return 0;
     }
 #endif

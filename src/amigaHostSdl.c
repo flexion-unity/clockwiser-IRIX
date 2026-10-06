@@ -2758,8 +2758,10 @@ int amigaHostSdlInit(AmigaHostSdl* host, M68k* cpu, int width, int height, int s
     host->showPerfHud = 0;
 
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+        fprintf(stderr, "SDL: SDL_Init(VIDEO) failed: %s\n", SDL_GetError());
         return 0;
     }
+    fprintf(stderr, "SDL: video driver: %s\n", SDL_GetCurrentVideoDriver());
 
 #if defined(AMIGA_HOST_HAVE_SDL2_MIXER)
     hostSdlAudioSubsystemOpened = 0;
@@ -2794,6 +2796,7 @@ int amigaHostSdlInit(AmigaHostSdl* host, M68k* cpu, int width, int height, int s
                                     windowHeight,
                                     SDL_WINDOW_SHOWN | SDL_WINDOW_ALLOW_HIGHDPI);
     if (host->window == NULL) {
+        fprintf(stderr, "SDL: SDL_CreateWindow failed: %s\n", SDL_GetError());
         amigaHostSdlShutdown(host);
         return 0;
     }
@@ -2803,8 +2806,21 @@ int amigaHostSdlInit(AmigaHostSdl* host, M68k* cpu, int width, int height, int s
 
     host->renderer = SDL_CreateRenderer((SDL_Window*)host->window, -1, SDL_RENDERER_ACCELERATED);
     if (host->renderer == NULL) {
+        fprintf(stderr, "SDL: accelerated renderer failed: %s\n", SDL_GetError());
+        /* Older systems (e.g. IRIX OpenGL 1.x) may lack accelerated GL renderer */
+        host->renderer = SDL_CreateRenderer((SDL_Window*)host->window, -1, SDL_RENDERER_SOFTWARE);
+    }
+    if (host->renderer == NULL) {
+        fprintf(stderr, "SDL: SDL_CreateRenderer failed: %s\n", SDL_GetError());
         amigaHostSdlShutdown(host);
         return 0;
+    }
+    {
+        SDL_RendererInfo rendererInfo;
+
+        if (SDL_GetRendererInfo((SDL_Renderer*)host->renderer, &rendererInfo) == 0) {
+            fprintf(stderr, "SDL: renderer: %s\n", rendererInfo.name);
+        }
     }
 
     host->texture = SDL_CreateTexture((SDL_Renderer*)host->renderer,
@@ -2813,6 +2829,7 @@ int amigaHostSdlInit(AmigaHostSdl* host, M68k* cpu, int width, int height, int s
                                       width,
                                       height);
     if (host->texture == NULL) {
+        fprintf(stderr, "SDL: SDL_CreateTexture failed: %s\n", SDL_GetError());
         amigaHostSdlShutdown(host);
         return 0;
     }
@@ -2821,11 +2838,13 @@ int amigaHostSdlInit(AmigaHostSdl* host, M68k* cpu, int width, int height, int s
 
     host->frameBuffer = (uint32_t*)malloc((size_t)width * (size_t)height * sizeof(uint32_t));
     if (host->frameBuffer == NULL) {
+        fprintf(stderr, "SDL: out of memory for frame buffer\n");
         amigaHostSdlShutdown(host);
         return 0;
     }
     host->playfieldIndexBuffer = (uint8_t*)malloc((size_t)width * (size_t)height);
     if (host->playfieldIndexBuffer == NULL) {
+        fprintf(stderr, "SDL: out of memory for playfield buffer\n");
         amigaHostSdlShutdown(host);
         return 0;
     }
