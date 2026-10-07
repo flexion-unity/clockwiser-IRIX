@@ -11,4 +11,6 @@
 
 without 'copy data' in POST_BUILD:
 
-$ cmake -B build -DCLOCKWISER_COPY_DATA=OFF
+$ cmake -B build -DCLOCKWISER_COPY_DATA=OFF -DCMAKE_BUILD_TYPE=Release
+
+Note: an optimized release build will take a loooong time to build on MIPS. Depending on your CPU speed, it can take 15 minutes or longer
