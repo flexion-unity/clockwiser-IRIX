@@ -1,0 +1,2 @@
+#define SDL_REVISION "IRIX-Port"
+#define SDL_REVISION_NUMBER 0

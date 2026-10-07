@@ -91,16 +91,39 @@ if(EMSCRIPTEN)
     return()
 endif()
 
-find_package(SDL2 REQUIRED CONFIG)
-
-find_package(PkgConfig QUIET)
-if(PKG_CONFIG_FOUND)
-    pkg_check_modules(SDL2_IMAGE_PC QUIET IMPORTED_TARGET SDL2_image)
-endif()
-if(TARGET PkgConfig::SDL2_image)
-    set(CLOCKWISER_SDL2_IMAGE_LIB PkgConfig::SDL2_image)
+# -----------------------------------------------------------------------------
+# IRIX: link the bundled static SDL2 and SDL2_image from IRIX-SDL2/ instead of
+# system ones. X11/GL are dlopen'd at runtime; libaudio (dmedia) and pthreads
+# are linked. SDL2_image is self-contained (stb_image), it only needs SDL2.
+# -----------------------------------------------------------------------------
+if(CMAKE_SYSTEM_NAME MATCHES "^IRIX")
+    set(CLOCKWISER_IRIX_SDL2_DIR "${CMAKE_SOURCE_DIR}/IRIX-SDL2")
+    find_package(Threads REQUIRED)
+    add_library(SDL2::SDL2 STATIC IMPORTED)
+    set_target_properties(SDL2::SDL2 PROPERTIES
+        IMPORTED_LOCATION "${CLOCKWISER_IRIX_SDL2_DIR}/lib32/libSDL2.a"
+        INTERFACE_INCLUDE_DIRECTORIES "${CLOCKWISER_IRIX_SDL2_DIR}/include;${CLOCKWISER_IRIX_SDL2_DIR}/include/SDL2"
+        INTERFACE_LINK_LIBRARIES "audio;Threads::Threads;m"
+    )
+    add_library(SDL2_image::SDL2_image STATIC IMPORTED)
+    set_target_properties(SDL2_image::SDL2_image PROPERTIES
+        IMPORTED_LOCATION "${CLOCKWISER_IRIX_SDL2_DIR}/lib32/libSDL2_image.a"
+        INTERFACE_LINK_LIBRARIES SDL2::SDL2
+    )
 else()
-    find_package(SDL2_image CONFIG QUIET)
+    find_package(SDL2 REQUIRED CONFIG)
+endif()
+
+if(NOT TARGET SDL2_image::SDL2_image)
+    find_package(PkgConfig QUIET)
+    if(PKG_CONFIG_FOUND)
+        pkg_check_modules(SDL2_IMAGE_PC QUIET IMPORTED_TARGET SDL2_image)
+    endif()
+    if(TARGET PkgConfig::SDL2_image)
+        set(CLOCKWISER_SDL2_IMAGE_LIB PkgConfig::SDL2_image)
+    else()
+        find_package(SDL2_image CONFIG QUIET)
+    endif()
 endif()
 if(TARGET SDL2_image::SDL2_image)
     set(CLOCKWISER_SDL2_IMAGE_LIB SDL2_image::SDL2_image)
@@ -200,7 +223,11 @@ set_source_files_properties(
     PROPERTIES COMPILE_FLAGS "${clockwiserTranspiledWarnFlags}"
 )
 
-if(APPLE)
+option(CLOCKWISER_COPY_DATA "Copy data/ next to the built executable after each build" ON)
+
+if(NOT CLOCKWISER_COPY_DATA)
+    # Skip the POST_BUILD data/ copy.
+elseif(APPLE)
     add_custom_command(TARGET clockwiser POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E rm -rf
             $<TARGET_FILE_DIR:clockwiser>/data
